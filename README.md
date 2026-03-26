@@ -4,7 +4,7 @@ An implementation of the **ZIP-RC** framework, enabling Large Language Models (L
 
 This method allows models to "introspect" and adaptively decide when to stop, when to branch, and which paths to prune during generation.
 
-## 📜 Citation
+## Citation
 
 If you use this code, please cite the original paper:
 
