@@ -1,48 +1,63 @@
 """
 ZIP-RC Model Wrapper
 
-Takes a standard causal language model and extends it to output:
-  (1) Normal token logits (original vocabulary)
-  (2) ZIP logits (reserved slice for introspection: reward + length predictions)
+Adds reserved ZIP tokens to a causal LM for joint (reward, length) prediction.
+Each ZIP token maps to one cell in a BV x BT grid:
+  - BV = number of reward bins (default 2: wrong/correct)
+  - BT = number of length bins (default 5: logarithmic remaining-length buckets)
+  - Total ZIP tokens = BV * BT
 
-Approach: add special <ZIP_0> ... <ZIP_N> tokens to the tokenizer, resize
-the model embeddings, then split logits after each forward pass. The last
-N logit dimensions correspond to ZIP tokens — used for reward/cost prediction.
-Single forward pass, zero overhead.
+Single forward pass produces normal token logits + ZIP logits.
+ZIP tokens are masked to -inf during generation so they're never sampled as text.
 """
 
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# Default bin configuration
+DEFAULT_BV = 2   # reward bins: 0=wrong, 1=correct
+DEFAULT_BT = 5   # length bins: 0-1, 2-3, 4-7, 8-15, 16+
 
-NUM_ZIP_TOKENS = 56  # 28 reward bins + 28 length bins (configurable)
+# Length bin boundaries (upper bounds, inclusive). Last bin is open-ended.
+LENGTH_BIN_EDGES = [1, 3, 7, 15]  # bin 0: 0-1, bin 1: 2-3, bin 2: 4-7, bin 3: 8-15, bin 4: 16+
+
+
+def tokens_left_to_bin(tokens_left: int) -> int:
+    """Map remaining token count to a length bin index."""
+    for i, edge in enumerate(LENGTH_BIN_EDGES):
+        if tokens_left <= edge:
+            return i
+    return len(LENGTH_BIN_EDGES)  # last open-ended bin
+
+
+def joint_label(reward_bin: int, length_bin: int, bt: int = DEFAULT_BT) -> int:
+    """Flatten (reward_bin, length_bin) into a single class index."""
+    return reward_bin * bt + length_bin
 
 
 class ZipRCModel(nn.Module):
-    """Wraps a causal LM with reserved ZIP tokens for introspection.
+    """Causal LM with reserved ZIP tokens for joint (reward, length) prediction.
 
-    Step 1A: Adds <ZIP_0> .. <ZIP_{N-1}> to the tokenizer and resizes embeddings.
-    Step 1B: On forward pass, splits logits into normal (text) and ZIP (introspection).
+    Step 1A: Adds <ZIP_0> .. <ZIP_{BV*BT-1}> to the tokenizer, resizes embeddings.
+    Step 1B: Splits logits into normal (text) and ZIP (joint introspection).
+    Step 1C: Masks ZIP logits to -inf in generation_logits so they're never sampled.
     """
 
     def __init__(
         self,
-        model_name_or_path: str,
-        num_reward_bins: int = 28,
-        num_length_bins: int = 28,
+        model_name_or_path: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        bv: int = DEFAULT_BV,
+        bt: int = DEFAULT_BT,
         freeze_backbone: bool = True,
     ):
         super().__init__()
-        self.num_reward_bins = num_reward_bins
-        self.num_length_bins = num_length_bins
-        self.num_zip_tokens = num_reward_bins + num_length_bins
+        self.bv = bv
+        self.bt = bt
+        self.num_zip_tokens = bv * bt
 
-        # Load base model and tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
-
-        # Record original vocab size before adding ZIP tokens
         self.original_vocab_size = len(self.tokenizer)
 
         # Step 1A — Reserve ZIP tokens
@@ -50,14 +65,10 @@ class ZipRCModel(nn.Module):
         self.tokenizer.add_tokens(zip_tokens)
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        # Freeze backbone if only training ZIP head
         if freeze_backbone:
             for param in self.model.parameters():
                 param.requires_grad = False
-            # Unfreeze the new ZIP token embeddings + LM head
-            # so they can be trained
-            lm_head = self.model.lm_head
-            for param in lm_head.parameters():
+            for param in self.model.lm_head.parameters():
                 param.requires_grad = True
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
@@ -66,66 +77,75 @@ class ZipRCModel(nn.Module):
             attention_mask=attention_mask,
             **kwargs,
         )
-        logits = outputs.logits  # (B, T, original_vocab + num_zip_tokens)
+        logits = outputs.logits  # (B, T, V + num_zip_tokens)
 
-        # Step 1B — Split the logits
+        # Step 1B — Split
         normal_logits = logits[..., :self.original_vocab_size]
-        zip_logits = logits[..., -self.num_zip_tokens:]
+        zip_logits = logits[..., -self.num_zip_tokens:]  # (B, T, BV*BT)
 
-        # Step 1C — Mask ZIP tokens so they are NEVER generated as text
-        # Read ZIP logits first, then set to -inf before any sampling
-        reward_logits = zip_logits[..., :self.num_reward_bins]
-        length_logits = zip_logits[..., self.num_reward_bins:]
-
-        # Return generation-safe logits: ZIP positions masked to -inf
+        # Step 1C — Mask ZIP tokens for generation
         generation_logits = logits.clone()
         generation_logits[..., -self.num_zip_tokens:] = float("-inf")
 
         return ZipRCOutput(
             token_logits=normal_logits,
             generation_logits=generation_logits,
-            reward_logits=reward_logits,
-            length_logits=length_logits,
+            zip_logits=zip_logits,
         )
 
     def predict_zip(self, input_ids, attention_mask=None):
-        """Return scalar expected reward and expected length from last position."""
+        """Return marginal reward and length distributions from the joint ZIP logits."""
         out = self.forward(input_ids, attention_mask)
+        # Joint distribution over (reward_bin, length_bin) at last position
+        joint_probs = torch.softmax(out.zip_logits[:, -1, :], dim=-1)  # (B, BV*BT)
+        joint_grid = joint_probs.view(-1, self.bv, self.bt)  # (B, BV, BT)
 
-        reward_probs = torch.softmax(out.reward_logits[:, -1, :], dim=-1)
-        length_probs = torch.softmax(out.length_logits[:, -1, :], dim=-1)
+        # Marginals
+        reward_probs = joint_grid.sum(dim=-1)  # (B, BV) — sum over length bins
+        length_probs = joint_grid.sum(dim=-2)  # (B, BT) — sum over reward bins
 
-        reward_bins = torch.linspace(0, 1, self.num_reward_bins, device=reward_probs.device)
-        length_bins = torch.arange(self.num_length_bins, device=length_probs.device, dtype=torch.float)
+        # Expected values
+        reward_vals = torch.arange(self.bv, device=joint_probs.device, dtype=torch.float)
+        length_vals = torch.arange(self.bt, device=joint_probs.device, dtype=torch.float)
 
-        expected_reward = (reward_probs * reward_bins).sum(dim=-1)
-        expected_length = (length_probs * length_bins).sum(dim=-1)
+        expected_reward = (reward_probs * reward_vals).sum(dim=-1)
+        expected_length = (length_probs * length_vals).sum(dim=-1)
 
         return expected_reward, expected_length
 
 
 class ZipRCOutput:
-    """Container for ZIP-RC forward pass outputs."""
+    __slots__ = ("token_logits", "generation_logits", "zip_logits")
 
-    __slots__ = ("token_logits", "generation_logits", "reward_logits", "length_logits")
-
-    def __init__(self, token_logits, generation_logits, reward_logits, length_logits):
+    def __init__(self, token_logits, generation_logits, zip_logits):
         self.token_logits = token_logits
         self.generation_logits = generation_logits
-        self.reward_logits = reward_logits
-        self.length_logits = length_logits
+        self.zip_logits = zip_logits
 
 
 if __name__ == "__main__":
-    model = ZipRCModel("gpt2", num_reward_bins=28, num_length_bins=28)
+    model = ZipRCModel("Qwen/Qwen2.5-1.5B-Instruct", bv=2, bt=5)
     tok = model.tokenizer
     inputs = tok("Hello, world!", return_tensors="pt")
 
     out = model(**inputs)
-    print(f"Token logits shape:  {out.token_logits.shape}")   # (1, T, 50257)
-    print(f"Reward logits shape: {out.reward_logits.shape}")   # (1, T, 28)
-    print(f"Length logits shape: {out.length_logits.shape}")   # (1, T, 28)
+    print(f"Token logits shape: {out.token_logits.shape}")
+    print(f"ZIP logits shape:   {out.zip_logits.shape}")  # (1, T, 10)
 
     reward, length = model.predict_zip(**inputs)
     print(f"Expected reward: {reward.item():.3f}")
-    print(f"Expected length: {length.item():.1f}")
+    print(f"Expected length bin: {length.item():.1f}")
+
+    # Verify Step 1C
+    assert (out.generation_logits[..., -model.num_zip_tokens:] == float("-inf")).all()
+    probs = torch.softmax(out.generation_logits[:, -1, :], dim=-1)
+    assert probs[0, -model.num_zip_tokens:].sum() == 0
+    print("Step 1C verified: ZIP tokens have 0 sampling probability")
+
+    # Verify joint label helper
+    assert joint_label(0, 3) == 3
+    assert joint_label(1, 3) == 8
+    assert tokens_left_to_bin(0) == 0
+    assert tokens_left_to_bin(5) == 2
+    assert tokens_left_to_bin(20) == 4
+    print("Joint label helpers verified")
