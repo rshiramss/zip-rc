@@ -46,7 +46,7 @@ class ZipRCModel(nn.Module):
 
     def __init__(
         self,
-        model_name_or_path: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        model_name_or_path: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
         bv: int = DEFAULT_BV,
         bt: int = DEFAULT_BT,
         freeze_backbone: bool = True,
@@ -124,7 +124,7 @@ class ZipRCOutput:
 
 
 if __name__ == "__main__":
-    model = ZipRCModel("Qwen/Qwen2.5-1.5B-Instruct", bv=2, bt=5)
+    model = ZipRCModel("meta-llama/Meta-Llama-3.1-8B-Instruct", bv=2, bt=5)
     tok = model.tokenizer
     inputs = tok("Hello, world!", return_tensors="pt")
 

@@ -7,7 +7,7 @@ import json
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 PROMPTS_PATH = "data/prompts.jsonl"
 OUTPUT_PATH = "data/rollouts.jsonl"
 MAX_NEW_TOKENS = 256

@@ -14,7 +14,7 @@ import json
 from transformers import AutoTokenizer
 from zip_rc_model import DEFAULT_BV, DEFAULT_BT, tokens_left_to_bin, joint_label
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 INPUT_PATH = "data/scored_rollouts.jsonl"
 OUTPUT_PATH = "data/prefix_dataset.jsonl"
 
