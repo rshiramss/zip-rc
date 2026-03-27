@@ -55,7 +55,7 @@ class ZipRCModel(nn.Module):
         self.bv = bv
         self.bt = bt
         self.num_zip_tokens = bv * bt
-
+    
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
         self.original_vocab_size = len(self.tokenizer)
