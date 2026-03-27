@@ -1,32 +1,20 @@
 \documentclass[11pt,a4paper]{article}
 
-% === Essential Packages ===
+% Essential packages
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-
-% === Math Packages ===
 \usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{amsthm}
-\usepackage{mathtools}
-
-% === Tables and Figures ===
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{graphicx}
-
-% === Code Listings ===
 \usepackage{listings}
 \usepackage{xcolor}
-
-% === Layout and Formatting ===
 \usepackage[margin=1in]{geometry}
 \usepackage{parskip}
 \usepackage{enumitem}
-
-% === Hyperlinks ===
 \usepackage{hyperref}
+
 \hypersetup{
     colorlinks=true,
     linkcolor=blue,
@@ -34,581 +22,402 @@
     urlcolor=blue
 }
 
-% === Algorithm Package ===
-\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
-
-% === Code Listing Style ===
+% Code listing style
 \definecolor{codegreen}{rgb}{0,0.6,0}
 \definecolor{codegray}{rgb}{0.5,0.5,0.5}
-\definecolor{codepurple}{rgb}{0.58,0,0.82}
 \definecolor{backcolour}{rgb}{0.95,0.95,0.92}
 
 \lstdefinestyle{mystyle}{
     backgroundcolor=\color{backcolour},
     commentstyle=\color{codegreen},
     keywordstyle=\color{magenta},
-    numberstyle=\tiny\color{codegray},
-    stringstyle=\color{codepurple},
     basicstyle=\ttfamily\footnotesize,
-    breakatwhitespace=false,
     breaklines=true,
-    captionpos=b,
     keepspaces=true,
-    numbers=left,
-    numbersep=5pt,
-    showspaces=false,
-    showstringspaces=false,
-    showtabs=false,
     tabsize=2,
     frame=single
 }
 \lstset{style=mystyle}
 
-% === Custom Commands ===
+% Custom command for ZIP tokens
 \newcommand{\ziptoken}[1]{\texttt{<ZIP\_#1>}}
-\newcommand{\E}{\mathbb{E}}
-\newcommand{\R}{\mathbb{R}}
-\newcommand{\vocab}{\mathcal{V}}
 
-% === Theorem Environments ===
-\theoremstyle{definition}
-\newtheorem{definition}{Definition}[section]
-\newtheorem{property}{Property}[section]
-
-% === Document Info ===
-\title{\textbf{ZIP-RC: Zero-Overhead Introspection for\\Adaptive Test-Time Compute}\\[0.5em]
-\large A Framework for LLM Self-Prediction of Success and Compute Cost}
-\author{ZIP-RC Framework Documentation}
-\date{\today}
+\title{\textbf{ZIP-RC: Teaching Language Models to Know\\When They're Right (and How Long It'll Take)}\\[0.5em]
+\large A Practical Guide to Zero-Overhead Introspection}
+\author{Technical Explanation Document}
+\date{}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-ZIP-RC (Zero-Overhead Introspection for Adaptive Test-Time Compute) is a framework that enables Large Language Models (LLMs) to predict their own success probability and computational cost during inference---without adding any extra inference overhead. By extending the model vocabulary with special ``ZIP tokens,'' the model learns to jointly predict (1) whether the final answer will be correct (reward) and (2) how many more tokens remain until completion (length). This document provides a comprehensive technical explanation of the ZIP-RC architecture, mathematical formulations, code components, and practical applications.
+ZIP-RC is a simple but clever framework that teaches language models to predict two things while generating text: (1) ``Am I going to get this right?'' and (2) ``How much longer until I'm done?'' The key insight is that these predictions come for \textbf{free}---no extra computation needed---by adding just 10 special tokens to the vocabulary. This document explains how it works in plain terms.
 \end{abstract}
 
 \tableofcontents
 \newpage
 
 %==============================================================================
-\section{Introduction}
+\section{What Problem Does ZIP-RC Solve?}
 %==============================================================================
 
-Large Language Models have demonstrated remarkable capabilities in reasoning and problem-solving tasks. However, during generation, models typically operate without awareness of their own success probability or remaining computational cost. ZIP-RC addresses this limitation by enabling models to ``introspect'' at every generation step.
+When a language model generates text, it's essentially ``flying blind.'' It has no idea:
+\begin{itemize}
+    \item Is my current approach leading to a correct answer?
+    \item How many more tokens do I need to generate?
+\end{itemize}
 
-\subsection{Key Innovation}
+ZIP-RC fixes both problems by teaching the model to make predictions about its own output---at every single step of generation.
 
-The model learns to \textbf{jointly predict} two quantities at every generation step:
+\subsection{The Core Idea}
+
+Train the model to predict two things at every step:
+\begin{itemize}
+    \item \textbf{Reward}: Will I get this right? (yes or no)
+    \item \textbf{Length}: How many more tokens until I'm done? (rough estimate)
+\end{itemize}
+
+\subsection{Why This Matters}
+
+Once the model can predict these, you can make smart decisions:
+\begin{itemize}
+    \item \textbf{Low confidence?} Stop early and try a different approach
+    \item \textbf{Many tokens left + low success?} Don't waste compute on a doomed path
+    \item \textbf{Generating multiple options?} Pick the one most likely to be correct
+\end{itemize}
+
+%==============================================================================
+\section{The ZIP Token System}
+%==============================================================================
+
+\subsection{The Basic Setup}
+
+ZIP-RC adds 10 special tokens to the model's vocabulary. These tokens represent combinations of:
+\begin{itemize}
+    \item \textbf{2 reward bins}: wrong (0) or correct (1)
+    \item \textbf{5 length bins}: roughly how many tokens remain
+\end{itemize}
+
+That's $2 \times 5 = 10$ ZIP tokens total.
+
+\subsection{How Length Binning Works}
+
+The remaining tokens are grouped into 5 bins:
+
+\begin{center}
+\begin{tabular}{@{}ccp{5cm}@{}}
+\toprule
+\textbf{Bin} & \textbf{Tokens Left} & \textbf{Plain English} \\
+\midrule
+0 & 0--1 & Almost done (just finishing up) \\
+1 & 2--3 & A few tokens left \\
+2 & 4--7 & Several tokens left \\
+3 & 8--15 & Quite a few tokens left \\
+4 & 16+ & Lots of tokens left \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Why exponential bins?} Because the difference between 2 and 10 tokens matters more than the difference between 50 and 100. Early predictions need finer resolution.
+
+\textbf{Example:} If there are 5 tokens left, that falls in bin 2 (the 4--7 range).
+
+\subsection{The 10 ZIP Tokens}
+
+Each ZIP token combines a reward prediction with a length prediction:
+
+\begin{center}
+\begin{tabular}{@{}clp{6cm}@{}}
+\toprule
+\textbf{Token} & \textbf{Meaning} & \textbf{When to use} \\
+\midrule
+\ziptoken{0} & Wrong + almost done & Wrong answer, 0--1 tokens left \\
+\ziptoken{1} & Wrong + few left & Wrong answer, 2--3 tokens left \\
+\ziptoken{2} & Wrong + several left & Wrong answer, 4--7 tokens left \\
+\ziptoken{3} & Wrong + many left & Wrong answer, 8--15 tokens left \\
+\ziptoken{4} & Wrong + lots left & Wrong answer, 16+ tokens left \\
+\ziptoken{5} & Correct + almost done & Correct answer, 0--1 tokens left \\
+\ziptoken{6} & Correct + few left & Correct answer, 2--3 tokens left \\
+\ziptoken{7} & Correct + several left & Correct answer, 4--7 tokens left \\
+\ziptoken{8} & Correct + many left & Correct answer, 8--15 tokens left \\
+\ziptoken{9} & Correct + lots left & Correct answer, 16+ tokens left \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Simple Formula}
+
+To figure out which ZIP token to use:
+\[
+\text{ZIP token number} = (\text{reward bin}) \times 5 + (\text{length bin})
+\]
+
+\textbf{Example:} The answer will be correct (reward = 1) and there are 5 tokens left (bin = 2):
+\[
+\text{ZIP token} = 1 \times 5 + 2 = 7 \quad \Rightarrow \quad \ziptoken{7}
+\]
+
+%==============================================================================
+\section{How Training Works}
+%==============================================================================
+
+\subsection{The Training Pipeline}
+
+ZIP-RC training has four stages:
+
 \begin{enumerate}
-    \item \textbf{Reward}: Will the final answer be correct? (binary: wrong/correct)
-    \item \textbf{Remaining Length}: How many more tokens until completion? (5 bins: 0--1, 2--3, 4--7, 8--15, 16+)
+    \item \textbf{Generate}: Run the base model on problems to get completions
+    \item \textbf{Score}: Check if each answer was correct (yes = 1, no = 0)
+    \item \textbf{Build dataset}: Create training examples from every prefix position
+    \item \textbf{Train}: Teach the model which ZIP token to predict at each position
 \end{enumerate}
 
-This allows the model to make adaptive decisions during generation, such as when to stop, when to branch, and which paths to prune.
+\subsection{The Key Insight: Prefix Training}
 
-\subsection{Zero Overhead Property}
+For a completion with T tokens, we create T training examples---one for each prefix.
 
-The critical advantage of ZIP-RC is that introspection comes at \textbf{zero additional computational cost}. The ZIP predictions are derived from the same forward pass used for text generation---no extra model calls are required.
+\textbf{At each position:}
+\begin{itemize}
+    \item \textbf{Input}: The prompt plus the first t tokens of the completion
+    \item \textbf{Target}: The ZIP token that describes (final correctness, tokens remaining)
+\end{itemize}
+
+This teaches the model to ``see the future''---predicting the outcome at every step.
+
+\subsection{Worked Example}
+
+Let's walk through a complete example:
+
+\textbf{Setup:}
+\begin{itemize}
+    \item Question: ``What is 15 + 27?''
+    \item Model generates: ``15 + 27 = 42'' (11 tokens)
+    \item Ground truth answer: 42
+    \item Since 42 = 42, the reward is 1 (correct!)
+\end{itemize}
+
+\textbf{Training examples created:}
+
+\begin{center}
+\begin{tabular}{@{}clccc@{}}
+\toprule
+\textbf{Position} & \textbf{Prefix so far} & \textbf{Tokens left} & \textbf{Bin} & \textbf{Target} \\
+\midrule
+1 & ``15'' & 10 & 3 & \ziptoken{8} \\
+4 & ``15 + 27'' & 7 & 2 & \ziptoken{7} \\
+8 & ``15 + 27 = 4'' & 3 & 1 & \ziptoken{6} \\
+11 & ``15 + 27 = 42'' & 0 & 0 & \ziptoken{5} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Notice: All targets are \ziptoken{5}--\ziptoken{9} because the final answer is correct (reward = 1).
+
+\subsection{The Training Loss}
+
+Training uses standard cross-entropy loss---nothing fancy:
+
+The model outputs probabilities for all 10 ZIP tokens. We want it to assign high probability to the correct one. The loss is just:
+\[
+\text{Loss} = -\log(\text{probability of correct ZIP token})
+\]
+
+If the model predicts the right token with 90\% confidence, loss is low. If it's only 10\% confident, loss is high.
+
+%==============================================================================
+\section{How Inference Works}
+%==============================================================================
+
+\subsection{Zero Overhead---The Clever Part}
+
+Here's the magic: ZIP predictions cost \textbf{nothing extra} at inference time.
+
+\textbf{How it works:}
+\begin{enumerate}
+    \item ZIP tokens are added to the vocabulary (10 new entries at the end)
+    \item The model's output layer produces logits for \textit{all} tokens, including ZIP tokens
+    \item We just look at the last 10 logits to get our introspection predictions
+    \item ZIP tokens are masked during generation (set to $-\infty$) so they're never actually output as text
+\end{enumerate}
+
+\textbf{Key point:} No extra forward passes needed. The ZIP logits come out alongside regular token logits---for free.
+
+\subsection{Getting Predictions from ZIP Logits}
+
+After a forward pass, we have 10 numbers (the ZIP logits). Here's what to do with them:
+
+\textbf{Step 1: Get probabilities}\\
+Apply softmax to convert logits to probabilities. Now we have 10 probabilities that sum to 1.
+
+\textbf{Step 2: Get success probability}\\
+Add up the probabilities for the ``correct'' tokens (\ziptoken{5} through \ziptoken{9}):
+\[
+P(\text{correct}) = P(\ziptoken{5}) + P(\ziptoken{6}) + P(\ziptoken{7}) + P(\ziptoken{8}) + P(\ziptoken{9})
+\]
+
+\textbf{Step 3: Get length estimate}\\
+Similarly, group by length bin to estimate remaining tokens.
+
+\textbf{Example:} If the ZIP probabilities are heavily concentrated on \ziptoken{7} (correct, 4--7 tokens left), you know the model is confident it's on the right track with several tokens to go.
 
 %==============================================================================
 \section{Architecture Overview}
 %==============================================================================
 
-ZIP-RC consists of two main components: a modified model architecture and a data generation pipeline.
+\subsection{The ZipRCModel Wrapper}
 
-\subsection{ZipRCModel: Core Model Wrapper}
+The \texttt{ZipRCModel} class wraps any standard language model:
 
-The \texttt{ZipRCModel} class extends any causal language model with reserved ZIP tokens:
+\begin{lstlisting}[language=Python]
+class ZipRCModel:
+    def __init__(self, base_model):
+        # Add 10 ZIP tokens to vocabulary
+        tokenizer.add_tokens(['<ZIP_0>', ..., '<ZIP_9>'])
+        model.resize_token_embeddings(...)
+
+    def forward(self, input_ids):
+        # Get logits from base model (includes ZIP tokens)
+        logits = self.model(input_ids)
+
+        # Split the output
+        text_logits = logits[:, :-10]   # Regular tokens
+        zip_logits = logits[:, -10:]    # ZIP predictions
+
+        # For generation: mask ZIP tokens so they can't be sampled
+        gen_logits = logits.clone()
+        gen_logits[:, -10:] = -infinity
+
+        return text_logits, gen_logits, zip_logits
+\end{lstlisting}
+
+\subsection{What Each Output Is For}
+
 \begin{itemize}
-    \item Adds $B_V \times B_T = 2 \times 5 = 10$ special tokens: \ziptoken{0} through \ziptoken{9}
-    \item Each token represents one cell in the (reward\_bin, length\_bin) grid
-    \item A single forward pass outputs both text logits AND introspection logits
+    \item \textbf{text\_logits}: Computing probabilities over real text tokens
+    \item \textbf{gen\_logits}: Actually generating text (ZIP tokens masked out)
+    \item \textbf{zip\_logits}: Getting introspection predictions
 \end{itemize}
 
-\subsection{Data Pipeline}
-
-The training data is generated through a four-stage process:
-\begin{enumerate}
-    \item \texttt{generate\_rollouts.py} $\rightarrow$ Generate completions from base model
-    \item \texttt{score\_rollouts.py} $\rightarrow$ Score each completion (correct/incorrect)
-    \item \texttt{build\_prefix\_dataset.py} $\rightarrow$ Create training examples from prefixes
-    \item Training loop $\rightarrow$ Teach the model to predict (reward, length) at each prefix
-\end{enumerate}
-
-\subsection{Training Data Structure}
-
-For each completion with $T$ tokens, we create $T$ training examples. Example $t$ predicts: (final\_reward, tokens\_remaining $= T - t$). This teaches the model to look ahead at every generation step.
-
-\subsection{Pipeline Flow}
-
-The overall pipeline can be visualized as:
-\begin{center}
-\begin{tabular}{ccccc}
-\textbf{Prompts} & $\rightarrow$ & \textbf{Generate} & $\rightarrow$ & \textbf{Score} \\
-(JSONL) & & Rollouts Using & & Each Answer \\
-& & Base LM & & \\[0.5em]
-& & $\downarrow$ & & \\[0.5em]
-\textbf{Train} & $\leftarrow$ & \textbf{Build Dataset} & $\leftarrow$ & \\
-ZipRC Model & & Prefix Examples & & \\
-& & with Labels & &
-\end{tabular}
-\end{center}
-
 %==============================================================================
-\section{Mathematical Formulation}
+\section{Data Pipeline}
 %==============================================================================
 
-This section presents the formal mathematical framework underlying ZIP-RC.
-
-\subsection{Model Architecture}
-
-\subsubsection{Vocabulary Extension}
-
-The ZIP-RC model extends the original vocabulary with special tokens:
-\begin{equation}
-\vocab_{\text{ZIP}} = \vocab_{\text{original}} \cup \{\langle\text{ZIP}_0\rangle, \ldots, \langle\text{ZIP}_{B_V \cdot B_T - 1}\rangle\}
-\end{equation}
-where:
-\begin{itemize}
-    \item $B_V = 2$ (reward bins: wrong/correct)
-    \item $B_T = 5$ (length bins: exponentially-spaced buckets)
-    \item Total ZIP tokens: $B_V \times B_T = 10$
-\end{itemize}
-
-\subsubsection{Forward Pass}
-
-Given an input sequence $\mathbf{x}_{1:t}$, the model produces logits:
-\begin{equation}
-\text{logits} = f_\theta(\mathbf{x}_{1:t}) \in \R^{|\vocab_{\text{ZIP}}|}
-\end{equation}
-
-These logits are split into two parts:
-\begin{align}
-\text{logits}_{\text{text}} &= \text{logits}[\,:\,|\vocab_{\text{original}}|] \in \R^{|\vocab_{\text{original}}|} \\
-\text{logits}_{\text{ZIP}} &= \text{logits}[-B_V \cdot B_T\,:] \in \R^{B_V \times B_T}
-\end{align}
-
-\subsubsection{Generation Masking (Zero Overhead)}
-
-During text generation, ZIP tokens are masked to ensure they are never sampled:
-\begin{equation}
-\text{logits}_{\text{gen}}[\text{ZIP indices}] = -\infty
-\end{equation}
-
-This ensures ZIP tokens are \textbf{never sampled} as text during generation, maintaining the model's language generation capabilities while enabling introspection.
-
-\subsection{Joint Prediction}
-
-\subsubsection{Grid Cell Mapping}
-
-The ZIP tokens form a 2D grid where each cell corresponds to a (reward, length) pair:
-\begin{equation}
-\text{cell\_id}(v, \ell) = v \cdot B_T + \ell
-\end{equation}
-where:
-\begin{itemize}
-    \item $v \in \{0, 1\}$ is the reward bin (0 = wrong, 1 = correct)
-    \item $\ell \in \{0, 1, 2, 3, 4\}$ is the length bin
-\end{itemize}
-
-\subsubsection{Length Binning Function}
-
-The number of remaining tokens is discretized into bins:
-\begin{equation}
-\text{bin}(\text{tokens\_left}) = \begin{cases}
-0 & \text{if tokens\_left} \in [0, 1] \\
-1 & \text{if tokens\_left} \in [2, 3] \\
-2 & \text{if tokens\_left} \in [4, 7] \\
-3 & \text{if tokens\_left} \in [8, 15] \\
-4 & \text{if tokens\_left} \geq 16
-\end{cases}
-\end{equation}
-
-The bins are exponentially spaced to provide finer resolution for shorter remaining lengths.
-
-\subsubsection{Joint Distribution}
-
-The joint probability over reward and length is obtained via softmax:
-\begin{equation}
-p(v, \ell \mid \mathbf{x}_{1:t}) = \text{softmax}(\text{logits}_{\text{ZIP}})_{v \cdot B_T + \ell}
-\end{equation}
-
-\subsubsection{Marginal Distributions}
-
-The marginal distributions can be computed by summing over the joint:
-\begin{align}
-p(v \mid \mathbf{x}_{1:t}) &= \sum_{\ell=0}^{B_T-1} p(v, \ell \mid \mathbf{x}_{1:t}) \quad \text{(reward probability)} \\
-p(\ell \mid \mathbf{x}_{1:t}) &= \sum_{v=0}^{B_V-1} p(v, \ell \mid \mathbf{x}_{1:t}) \quad \text{(length probability)}
-\end{align}
-
-\subsubsection{Expected Values}
-
-Expected reward and length can be computed as:
-\begin{align}
-\E[v] &= \sum_{v=0}^{B_V-1} v \cdot p(v \mid \mathbf{x}_{1:t}) \\
-\E[\ell] &= \sum_{\ell=0}^{B_T-1} \ell \cdot p(\ell \mid \mathbf{x}_{1:t})
-\end{align}
-
-\subsection{Training Objective}
-
-For a completion with $T$ tokens, we create $T$ training examples.
-
-\subsubsection{Label Construction}
-
-At prefix position $t$:
-\begin{align}
-\text{tokens\_left} &= T - t \\
-v^* &= \mathbb{1}[\text{completion is correct}] \\
-\ell^* &= \text{bin}(\text{tokens\_left}) \\
-y^* &= v^* \cdot B_T + \ell^* \quad \text{(joint label)}
-\end{align}
-
-\subsubsection{Loss Function}
-
-The training uses standard cross-entropy loss over the 10 joint classes:
-\begin{equation}
-\mathcal{L} = -\log p(v^*, \ell^* \mid \mathbf{x}_{1:t}) = -\log \text{softmax}(\text{logits}_{\text{ZIP}})_{y^*}
-\end{equation}
-
-\subsection{Key Properties}
-
-\begin{property}[Zero Overhead]
-The computational cost of ZIP-RC inference equals that of the base model:
-\begin{equation}
-\text{Time}(\text{ZIP-RC forward pass}) = \text{Time}(\text{base LM forward pass})
-\end{equation}
-The ZIP logits are computed from the same hidden states---no extra forward passes needed.
-\end{property}
-
-\begin{property}[Introspection at Every Step]
-At any generation step $t$, the model can query:
-\begin{align}
-p(\text{success} \mid \text{prefix}_{1:t}) &= p(v=1 \mid \mathbf{x}_{1:t}) \\
-\E[\text{remaining tokens} \mid \text{prefix}_{1:t}] &\approx \text{unbin}(\E[\ell])
-\end{align}
-\end{property}
-
-%==============================================================================
-\section{Code Components Explained}
-%==============================================================================
-
-This section provides detailed explanations of each code component in the ZIP-RC implementation.
-
-\subsection{ZipRCModel}
-
-The core model class in \texttt{zip\_rc\_model.py}.
-
-\subsubsection{Initialization}
-
-The model initialization performs the following steps:
-\begin{enumerate}
-    \item Loads base causal LM (default: Meta-Llama-3.1-8B-Instruct)
-    \item Adds 10 ZIP tokens to vocabulary: \ziptoken{0} through \ziptoken{9}
-    \item Resizes embedding matrix to accommodate new tokens
-    \item Optionally freezes backbone, training only the LM head
-\end{enumerate}
-
-\subsubsection{Forward Pass}
-
-The forward pass consists of three stages:
-\begin{enumerate}
-    \item Run base model forward: \texttt{logits = model(input\_ids)}
-    \item Split logits into text vs ZIP:
-    \begin{itemize}
-        \item \texttt{normal\_logits = logits[:, :original\_vocab\_size]}
-        \item \texttt{zip\_logits = logits[:, -10:]}
-    \end{itemize}
-    \item Create generation logits with ZIP tokens masked to $-\infty$
-    \item Return all three: \texttt{token\_logits}, \texttt{generation\_logits}, \texttt{zip\_logits}
-\end{enumerate}
-
-\subsubsection{Prediction}
-
-The prediction method:
-\begin{enumerate}
-    \item Applies softmax to ZIP logits $\rightarrow$ joint distribution $p(v, \ell)$
-    \item Reshapes into $2 \times 5$ grid
-    \item Sums over dimensions to get marginals
-    \item Computes expected reward and expected length
-\end{enumerate}
-
-\subsection{generate\_rollouts.py}
-
-\textbf{Purpose:} Generate completions from base model (no ZIP tokens yet).
-
-\textbf{Process:}
-\begin{enumerate}
-    \item Load prompts from \texttt{data/prompts.jsonl}
-    \item Format as ``Q: \{prompt\}\textbackslash nA:''
-    \item Generate greedy completions (max 256 tokens)
-    \item Save to \texttt{data/rollouts.jsonl} with: prompt, answer (ground truth), completion, completion\_ids
-\end{enumerate}
-
-\subsection{score\_rollouts.py}
-
-\textbf{Purpose:} Evaluate each completion for correctness.
-
-\textbf{Scoring Logic:}
-\begin{enumerate}
-    \item Extract last number from completion text
-    \item Compare to ground truth answer
-    \item Assign reward: 1 if match, 0 otherwise
-    \item Add \texttt{predicted\_answer} and \texttt{reward} fields
-\end{enumerate}
-
-\textbf{Output:} \texttt{data/scored\_rollouts.jsonl}
-
-\subsection{build\_prefix\_dataset.py}
-
-\textbf{Purpose:} Create training examples for ZIP-RC.
-
-\textbf{Key Algorithm:}
-
-\begin{algorithm}[H]
-\SetAlgoLined
-\KwIn{Scored rollouts with completions and rewards}
-\KwOut{Prefix dataset with joint labels}
-\ForEach{scored rollout}{
-    $T \leftarrow$ length of completion\;
-    \For{$t \leftarrow 1$ \KwTo $T$}{
-        prefix $\leftarrow$ prompt $+$ completion$[{:}t]$\;
-        tokens\_left $\leftarrow T - t$\;
-        length\_bin $\leftarrow$ bin(tokens\_left)\;
-        joint\_label $\leftarrow$ reward\_bin $\times 5 +$ length\_bin\;
-        Save: \{input\_ids, attention\_mask, joint\_label\}\;
-    }
-}
-\caption{Build Prefix Dataset}
-\end{algorithm}
-
-\textbf{Example:}
-\begin{itemize}
-    \item Completion has $T=20$ tokens, reward$=1$ (correct)
-    \item At $t=15$: tokens\_left$=5 \rightarrow$ length\_bin$=2$ (bucket 4--7)
-    \item joint\_label $= 1 \times 5 + 2 = 7$ (ZIP token 7)
-\end{itemize}
-
-\textbf{Output:} \texttt{data/prefix\_dataset.jsonl} with thousands of prefix examples.
-
-\subsection{Training Loop}
-
-The training follows standard supervised learning:
-
-\begin{lstlisting}[language=Python, caption=Training Loop Pseudocode]
-model = ZipRCModel()
-for batch in dataset:
-    outputs = model(input_ids, attention_mask)
-    zip_logits = outputs.zip_logits[:, -1, :]  # last position
-    loss = CrossEntropyLoss(zip_logits, joint_labels)
-    loss.backward()
-\end{lstlisting}
-
-The model learns to predict the correct ZIP token at each prefix position.
-
-%==============================================================================
-\section{Complete Pipeline Example}
-%==============================================================================
-
-This section walks through a complete example using the prompt ``What is 15 + 27?''
-
-\subsection{Stage 1: Generate Rollout}
-
-\begin{verbatim}
-Prompt: "What is 15 + 27?"
-Ground truth: "42"
-Base model generates: "15 + 27 = 42"
-Completion tokens: [220, 16, 20, 488, 220, 17, 22, 284, 220, 19, 17]
-                   (11 tokens)
-\end{verbatim}
-
-\subsection{Stage 2: Score}
-
-\begin{verbatim}
-Extract last number: "42"
-Compare to ground truth: "42"
-Reward: 1 (correct)
-\end{verbatim}
-
-\subsection{Stage 3: Build Prefix Dataset}
-
-We create 11 training examples, one for each prefix:
-
-\begin{table}[h]
-\centering
-\caption{Training Examples Generated from ``15 + 27 = 42''}
-\begin{tabular}{@{}cllccc@{}}
-\toprule
-$t$ & Prefix & Tokens Left & Length Bin & Joint Label & ZIP Token \\
-\midrule
-1 & ``15'' & 10 & 3 & $1 \times 5 + 3 = 8$ & \ziptoken{8} \\
-2 & ``15 +'' & 9 & 3 & 8 & \ziptoken{8} \\
-3 & ``15 + '' & 8 & 3 & 8 & \ziptoken{8} \\
-4 & ``15 + 27'' & 7 & 2 & $1 \times 5 + 2 = 7$ & \ziptoken{7} \\
-5 & ``15 + 27 '' & 6 & 2 & 7 & \ziptoken{7} \\
-6 & ``15 + 27 ='' & 5 & 2 & 7 & \ziptoken{7} \\
-7 & ``15 + 27 = '' & 4 & 2 & 7 & \ziptoken{7} \\
-8 & ``15 + 27 = 4'' & 3 & 1 & $1 \times 5 + 1 = 6$ & \ziptoken{6} \\
-9 & ``15 + 27 = 42'' & 2 & 1 & 6 & \ziptoken{6} \\
-10 & ``15 + 27 = 42'' & 1 & 0 & $1 \times 5 + 0 = 5$ & \ziptoken{5} \\
-11 & ``15 + 27 = 42'' (end) & 0 & 0 & 5 & \ziptoken{5} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Stage 4: Training}
-
-For each training example:
-\begin{enumerate}
-    \item Feed prefix into model
-    \item Model outputs 10 ZIP logits
-    \item Loss $=$ CrossEntropy(zip\_logits, target\_label)
-    \item Model learns: ``After `15 + 27 =', I should output \ziptoken{7} (correct, 4--7 tokens left)''
-\end{enumerate}
-
-\subsection{Stage 5: Inference (After Training)}
-
-\begin{lstlisting}[language=Python, caption=Inference Example]
-model = ZipRCModel.load_trained()
-prompt = "What is 15 + 27?"
-prefix = "15 + 27 = 4"
-
-reward, length = model.predict_zip(prefix)
-# reward ~ 0.95 (high confidence of correctness)
-# length ~ 0.8 (likely 0-3 tokens remaining)
-\end{lstlisting}
-
-The model now knows mid-generation whether it's on track!
-
-%==============================================================================
-\section{Use Cases and Applications}
-%==============================================================================
-
-ZIP-RC enables several practical applications for adaptive inference.
-
-\subsection{Adaptive Early Stopping}
-
-\begin{lstlisting}[language=Python, caption=Early Stopping Strategy]
-if p(success | prefix) < 0.3:
-    stop_generation()
-    try_different_approach()
-\end{lstlisting}
-
-When the model detects low success probability, it can abort the current generation path and try an alternative approach.
-
-\subsection{Beam Search Pruning}
-
-\begin{lstlisting}[language=Python, caption=Beam Pruning Strategy]
-for beam in beams:
-    score = p(success) - cost_weight * expected_length
-    beam.score = score
-beams = sorted(beams, key=lambda b: b.score, reverse=True)[:k]
-\end{lstlisting}
-
-Beams can be scored and pruned based on both success probability and expected remaining length.
-
-\subsection{Best-of-N Selection}
-
-\begin{lstlisting}[language=Python, caption=Best-of-N Selection]
-completions = generate_n_completions(prompt, n=N)
-best_idx = argmax([p(success | c) for c in completions])
-return completions[best_idx]
-\end{lstlisting}
-
-When generating multiple candidate completions, select the one with highest predicted success probability.
-
-\subsection{Dynamic Compute Allocation}
-
-\begin{lstlisting}[language=Python, caption=Dynamic Compute Allocation]
-if p(success) > 0.8 and expected_length < 5:
-    # Efficient path: continue
-    continue_generation()
-elif p(success) < 0.2 and expected_length > 20:
-    # Waste of compute: abort early
-    abort_and_retry()
-\end{lstlisting}
-
-Allocate compute resources based on the expected utility of continuing generation.
-
-\subsection{Uncertainty Estimation}
-
-\begin{lstlisting}[language=Python, caption=Uncertainty-Based Branching]
-entropy = -sum(p(v,l) * log(p(v,l)) for v,l in grid)
-if entropy > threshold:
-    # Model is uncertain: consider multiple paths
-    branch_generation()
-\end{lstlisting}
-
-High entropy in the joint distribution indicates model uncertainty, suggesting multiple generation paths should be explored.
-
-\subsection{Summary of Key Benefits}
-
-\begin{description}
-    \item[Zero Overhead:] No extra forward passes---introspection is ``free''
-    \item[Real-time:] Predictions available at every token
-    \item[Joint Modeling:] Captures correlation between success and length
-    \item[Generalizable:] Works with any causal LM backbone
-\end{description}
-
-%==============================================================================
-\section{File Structure Summary}
-%==============================================================================
-
-The ZIP-RC codebase is organized as follows:
+\subsection{File Structure}
 
 \begin{verbatim}
 zip-rc/
-├── zip_rc_model.py          # Core model: adds ZIP tokens, splits logits
-├── generate_rollouts.py     # Step 1: Generate completions from base LM
-├── score_rollouts.py        # Step 2: Evaluate correctness
-├── build_prefix_dataset.py  # Step 3: Create prefix training examples
-├── build_rollout_labels.py  # Alternative labeling script (more general)
-├── data/
-│   ├── prompts.jsonl        # Input: math questions + answers
-│   ├── rollouts.jsonl       # Output: generated completions
-│   ├── scored_rollouts.jsonl # Output: completions + rewards
-│   └── prefix_dataset.jsonl # Output: training examples
-└── README.md                # Citation and overview
+  zip_rc_model.py          # Core model wrapper
+  generate_rollouts.py     # Step 1: Generate completions
+  score_rollouts.py        # Step 2: Check if correct
+  build_prefix_dataset.py  # Step 3: Build training data
+  data/
+    prompts.jsonl          # Input: questions + answers
+    rollouts.jsonl         # Generated completions
+    scored_rollouts.jsonl  # Completions with rewards
+    prefix_dataset.jsonl   # Final training examples
 \end{verbatim}
 
-\subsection{Execution Order}
+\subsection{Running the Pipeline}
 
-\begin{enumerate}
-    \item \texttt{python generate\_rollouts.py} $\rightarrow$ creates \texttt{rollouts.jsonl}
-    \item \texttt{python score\_rollouts.py} $\rightarrow$ creates \texttt{scored\_rollouts.jsonl}
-    \item \texttt{python build\_prefix\_dataset.py} $\rightarrow$ creates \texttt{prefix\_dataset.jsonl}
-    \item Train ZipRCModel on \texttt{prefix\_dataset.jsonl} (training script not included)
-    \item Use trained model for adaptive inference
-\end{enumerate}
+\begin{lstlisting}[language=bash]
+# Step 1: Generate completions from base model
+python generate_rollouts.py
+# Creates: data/rollouts.jsonl
 
-\subsection{Model Files}
+# Step 2: Score each completion (correct or not)
+python score_rollouts.py
+# Creates: data/scored_rollouts.jsonl
+
+# Step 3: Build training examples from prefixes
+python build_prefix_dataset.py
+# Creates: data/prefix_dataset.jsonl
+
+# Step 4: Train the model (script not included)
+# Use prefix_dataset.jsonl with standard training loop
+\end{lstlisting}
+
+\subsection{Current Limitations}
+
+\textbf{Note:} The current implementation uses a bare ``Q:/A:'' prompt format. With this simple template, all examples may land in reward\_bin=0 (incorrect), because the base model often fails to produce correct answers without additional guidance.
+
+\textbf{To get training signal for both reward classes}, you would need:
+\begin{itemize}
+    \item \textbf{More examples}: A larger and more diverse prompt dataset increases the chance of some correct answers
+    \item \textbf{Few-shot prompting}: Include example Q\&A pairs before the actual question to guide the model
+    \item \textbf{Chain-of-thought prompting}: Encourage the model to show its reasoning step-by-step, which often improves accuracy
+    \item \textbf{Easier problems}: Start with simpler math problems where the base model is more likely to succeed
+\end{itemize}
+
+Having both correct and incorrect rollouts in the training data is important---it teaches the model to distinguish between paths that lead to success versus failure.
+
+%==============================================================================
+\section{Practical Applications}
+%==============================================================================
+
+Once you have a trained ZIP-RC model, here's what you can do with it:
+
+\subsection{Early Stopping}
+
+If the model thinks it's going to fail, stop early:
+
+\begin{lstlisting}[language=Python]
+if probability_of_success < 0.3:
+    stop_and_try_different_approach()
+\end{lstlisting}
+
+\subsection{Smart Beam Search}
+
+When exploring multiple paths, score them by expected utility:
+
+\begin{lstlisting}[language=Python]
+for each beam:
+    score = P(success) - cost_weight * expected_length
+keep the top-k beams by score
+\end{lstlisting}
+
+This automatically prunes paths that are both unlikely to succeed AND expensive.
+
+\subsection{Best-of-N Selection}
+
+Generate N completions, pick the one most likely to be correct:
+
+\begin{lstlisting}[language=Python]
+completions = [generate() for _ in range(N)]
+best = pick completion with highest P(success)
+\end{lstlisting}
+
+\subsection{Uncertainty Detection}
+
+If the ZIP probabilities are spread across many tokens (high entropy), the model is uncertain. This is a signal to explore multiple paths:
+
+\begin{lstlisting}[language=Python]
+if model_is_uncertain:
+    branch_into_multiple_paths()
+\end{lstlisting}
+
+\subsection{Summary of Benefits}
 
 \begin{description}
-    \item[Base model:] \texttt{meta-llama/Meta-Llama-3.1-8B-Instruct} (from HuggingFace)
-    \item[Trained ZIP-RC checkpoint:] (train yourself using prefix dataset)
+    \item[Zero Overhead:] No extra computation---introspection is free
+    \item[Real-time:] Predictions available at every token
+    \item[Joint Modeling:] Captures the relationship between success and length
+    \item[Plug and Play:] Works with any causal language model
 \end{description}
 
 %==============================================================================
-\section{Conclusion}
+\section{Summary}
 %==============================================================================
 
-ZIP-RC provides an elegant solution to the problem of LLM self-awareness during generation. By extending the vocabulary with special tokens and training on prefix-labeled data, the model gains the ability to predict its own success probability and remaining generation length at zero additional inference cost.
+ZIP-RC is a simple framework that gives language models self-awareness during generation:
 
-The framework's key contributions are:
 \begin{enumerate}
-    \item A simple architectural modification that adds introspection capabilities to any causal LM
-    \item A systematic data generation pipeline for creating training examples
-    \item Mathematical foundations for joint reward-length prediction
-    \item Practical applications for adaptive test-time compute allocation
+    \item \textbf{Add 10 special tokens} that encode (reward, length) predictions
+    \item \textbf{Create training data} by labeling every prefix of every completion
+    \item \textbf{Train} the model to predict the right ZIP token at each position
+    \item \textbf{Use} the ZIP predictions to make smarter decisions during inference
 \end{enumerate}
 
-Future work may explore:
-\begin{itemize}
-    \item More fine-grained length binning for longer generations
-    \item Multi-dimensional reward signals beyond binary correctness
-    \item Integration with tree-search methods like MCTS
-    \item Application to domains beyond mathematical reasoning
-\end{itemize}
+The key insight is that by training on prefix-level labels, the model learns to predict outcomes at \textit{every step} of generation. And because ZIP logits come from the same forward pass as regular token logits, this introspection is completely free.
 
 \end{document}

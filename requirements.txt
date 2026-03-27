@@ -1,0 +1,13 @@
+# ZIP-RC Dependencies
+# Core ML libraries
+torch>=2.0.0
+transformers>=4.36.0
+
+# Efficient model loading and inference
+accelerate>=0.25.0
+
+# Dataset handling (optional, for HuggingFace datasets)
+datasets>=2.14.0
+
+# Progress bars
+tqdm>=4.65.0

@@ -16,3 +16,40 @@ If you use this code, please cite the original paper:
   year={2024}
 }
 ```
+
+## Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/your-username/zip-rc.git
+cd zip-rc
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Run Locally
+
+```bash
+# Step 1: Generate rollouts from sample prompts
+python generate_rollouts.py
+
+# Step 2: Score the rollouts
+python score_rollouts.py
+
+# Step 3: Build the prefix dataset for training
+python build_prefix_dataset.py
+```
+
+### Run on Google Colab
+
+Open the notebook in Google Colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/your-username/zip-rc/blob/main/zip_rc_colab.ipynb)
+
+Or manually:
+1. Upload the repository files to Colab
+2. Run `!pip install -r requirements.txt`
+3. Follow the pipeline steps above
+
+**Note:** Running on Colab requires a GPU runtime for reasonable performance with LLaMA models.
