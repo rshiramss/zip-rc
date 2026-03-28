@@ -16,7 +16,7 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Shared default model for the script pipeline.
-DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
+DEFAULT_MODEL_NAME = "Qwen/Qwen3.5-4B"
 
 # Default bin configuration
 DEFAULT_BV = 2   # reward bins: 0=wrong, 1=correct
