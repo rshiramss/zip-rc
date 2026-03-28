@@ -15,6 +15,9 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# Shared default model for the script pipeline.
+DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
+
 # Default bin configuration
 DEFAULT_BV = 2   # reward bins: 0=wrong, 1=correct
 DEFAULT_BT = 5   # length bins: 0-9, 10-19, 20-39, 40-79, 80+
@@ -46,7 +49,7 @@ class ZipRCModel(nn.Module):
 
     def __init__(
         self,
-        model_name_or_path: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        model_name_or_path: str = DEFAULT_MODEL_NAME,
         bv: int = DEFAULT_BV,
         bt: int = DEFAULT_BT,
         freeze_backbone: bool = True,
@@ -124,7 +127,7 @@ class ZipRCOutput:
 
 
 if __name__ == "__main__":
-    model = ZipRCModel("meta-llama/Meta-Llama-3.1-8B-Instruct", bv=2, bt=5)
+    model = ZipRCModel(DEFAULT_MODEL_NAME, bv=2, bt=5)
     tok = model.tokenizer
     inputs = tok("Hello, world!", return_tensors="pt")
 

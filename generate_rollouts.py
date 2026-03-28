@@ -6,7 +6,7 @@ numeric answer, compares to ground truth, and assigns a binary reward.
 
 Example usage:
     python generate_rollouts.py --num-examples 50
-    python generate_rollouts.py --model Qwen/Qwen2.5-1.5B-Instruct --num-examples 200 --output data/rollouts.jsonl
+    python generate_rollouts.py --model Qwen/Qwen3-8B --num-examples 200 --output data/rollouts.jsonl
 """
 
 import argparse
@@ -17,6 +17,8 @@ import os
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from zip_rc_model import DEFAULT_MODEL_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ def extract_number(text: str) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate rollouts from GSM8K")
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME,
                         help="HuggingFace model name or path")
     parser.add_argument("--num-examples", type=int, default=50,
                         help="Number of GSM8K examples to process")
@@ -134,6 +136,7 @@ def main():
             correct_count += reward
 
             results.append({
+                "model_name": args.model,
                 "question": question,
                 "completion": completion,
                 "completion_ids": completion_ids,
