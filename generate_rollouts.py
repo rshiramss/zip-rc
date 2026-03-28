@@ -7,6 +7,7 @@ numeric answer, compares to ground truth, and assigns a binary reward.
 Example usage:
     python generate_rollouts.py --num-examples 50
     python generate_rollouts.py --model Qwen/Qwen3-8B --num-examples 200 --output data/rollouts.jsonl
+    python generate_rollouts.py --num-examples 10 --num-samples 1 --load-in-8bit
 """
 
 import argparse
@@ -74,6 +75,8 @@ def main():
                         help="Sampling temperature (ignored with --greedy)")
     parser.add_argument("--greedy", action="store_true",
                         help="Use greedy decoding instead of sampling")
+    parser.add_argument("--load-in-8bit", action="store_true",
+                        help="Load the model with 8-bit quantization via bitsandbytes")
     parser.add_argument("--output", type=str, default="data/rollouts.jsonl",
                         help="Output JSONL file path")
     args = parser.parse_args()
@@ -81,10 +84,22 @@ def main():
     # Load model and tokenizer
     print(f"Loading model: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = model.to(device)
+
+    load_kwargs = {}
+    if args.load_in_8bit:
+        if device != "cuda":
+            raise ValueError("--load-in-8bit requires CUDA.")
+        load_kwargs["load_in_8bit"] = True
+        load_kwargs["device_map"] = "auto"
+    elif device == "cuda":
+        load_kwargs["torch_dtype"] = torch.float16
+
+    model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
+    if not args.load_in_8bit:
+        model = model.to(device)
     model.eval()
+    model_device = next(model.parameters()).device
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -120,7 +135,8 @@ def main():
 
         # Format prompt
         prompt = f"Q: {question}\nA:"
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        inputs = tokenizer(prompt, return_tensors="pt")
+        inputs = {key: value.to(model_device) for key, value in inputs.items()}
         prompt_len = inputs["input_ids"].shape[1]
 
         for s in range(args.num_samples):
