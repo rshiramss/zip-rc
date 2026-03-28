@@ -1,7 +1,7 @@
 # ZIP-RC Dependencies
 # Core ML libraries
 torch>=2.0.0
-transformers>=4.36.0
+transformers>=4.51.1
 
 # Efficient model loading and inference
 accelerate>=0.25.0
