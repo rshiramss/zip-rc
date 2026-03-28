@@ -17,10 +17,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Default bin configuration
 DEFAULT_BV = 2   # reward bins: 0=wrong, 1=correct
-DEFAULT_BT = 5   # length bins: 0-1, 2-3, 4-7, 8-15, 16+
+DEFAULT_BT = 5   # length bins: 0-9, 10-19, 20-39, 40-79, 80+
 
 # Length bin boundaries (upper bounds, inclusive). Last bin is open-ended.
-LENGTH_BIN_EDGES = [1, 3, 7, 15]  # bin 0: 0-1, bin 1: 2-3, bin 2: 4-7, bin 3: 8-15, bin 4: 16+
+LENGTH_BIN_EDGES = [9, 19, 39, 79]  # bin 0: 0-9, bin 1: 10-19, bin 2: 20-39, bin 3: 40-79, bin 4: 80+
 
 
 def tokens_left_to_bin(tokens_left: int) -> int:
@@ -146,6 +146,9 @@ if __name__ == "__main__":
     assert joint_label(0, 3) == 3
     assert joint_label(1, 3) == 8
     assert tokens_left_to_bin(0) == 0
-    assert tokens_left_to_bin(5) == 2
-    assert tokens_left_to_bin(20) == 4
+    assert tokens_left_to_bin(9) == 0
+    assert tokens_left_to_bin(10) == 1
+    assert tokens_left_to_bin(25) == 2
+    assert tokens_left_to_bin(50) == 3
+    assert tokens_left_to_bin(80) == 4
     print("Joint label helpers verified")

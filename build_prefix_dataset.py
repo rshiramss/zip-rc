@@ -4,7 +4,7 @@ Build prefix-labeled training dataset for ZIP-RC from scored rollouts.
 For each rollout with T completion tokens, walks prefixes t=1..T and computes:
   - tokens_left = T - t
   - reward_bin (0=wrong, 1=correct)
-  - length_bin (logarithmic buckets: 0-1, 2-3, 4-7, 8-15, 16+)
+  - length_bin (logarithmic buckets: 0-9, 10-19, 20-39, 40-79, 80+)
   - joint_label = reward_bin * BT + length_bin
 
 Example usage:

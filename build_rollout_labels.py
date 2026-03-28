@@ -8,11 +8,11 @@ This script does the minimal first pass described in the paper:
 5. save one label per prefix:
    - reward bin: 0 = wrong, 1 = correct
    - remaining-length bin:
-       0 = 0-1 tokens left
-       1 = 2-3
-       2 = 4-7
-       3 = 8-15
-       4 = 16+
+       0 = 0-9 tokens left
+       1 = 10-19
+       2 = 20-39
+       3 = 40-79
+       4 = 80+
 
 The output is JSONL, one row per prefix, with an additional ``grid_cell`` field
 that maps the reward/length pair to a single class id.
@@ -113,13 +113,13 @@ def reward_bin_for_completion(completion: str, expected_answer: str) -> int:
 
 
 def length_bin_for_remaining_tokens(tokens_left: int) -> int:
-    if tokens_left <= 1:
+    if tokens_left <= 9:
         return 0
-    if tokens_left <= 3:
+    if tokens_left <= 19:
         return 1
-    if tokens_left <= 7:
+    if tokens_left <= 39:
         return 2
-    if tokens_left <= 15:
+    if tokens_left <= 79:
         return 3
     return 4
 
