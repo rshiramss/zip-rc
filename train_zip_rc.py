@@ -3,19 +3,14 @@ Train ZIP-RC Model
 
 Trains the ZipRCModel to predict joint (reward, length) labels from prefix examples.
 
-Loss function (from paper Section 4, Equation 3):
-    L = L_aux + α_KL × KL(π || π_θ)
+Loss function:
+    L = L_aux
 
 Where:
     - L_aux: Cross-entropy loss on ZIP logits
-    - KL term: Regularization to preserve base model's generation quality
-    - α_KL: Weighting factor for KL regularization (0 = no regularization)
 
 Usage:
     python train_zip_rc.py --epochs 3 --batch_size 16 --learning_rate 5e-5 --freeze_backbone
-
-    # With KL regularization to preserve generation quality
-    python train_zip_rc.py --epochs 3 --batch_size 16 --alpha_kl 0.1
 
     # Full training (unfreeze backbone)
     python train_zip_rc.py --epochs 5 --batch_size 8 --learning_rate 1e-5 --no-freeze_backbone
@@ -26,15 +21,13 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from zip_rc_model import ZipRCModel, DEFAULT_BV, DEFAULT_BT
+from zip_rc_model import ZipRCModel, DEFAULT_BV, DEFAULT_BT, DEFAULT_MODEL_NAME
 
 # Configure logging
 logging.basicConfig(
@@ -58,14 +51,25 @@ class PrefixDataset(Dataset):
             - joint_label: int in [0, BV*BT-1]
         """
         self.examples = []
+        dataset_models = set()
         with open(jsonl_path) as f:
             for line in f:
                 ex = json.loads(line)
+                if ex.get("model_name"):
+                    dataset_models.add(ex["model_name"])
                 self.examples.append({
                     "input_ids": torch.tensor(ex["input_ids"], dtype=torch.long),
                     "attention_mask": torch.tensor(ex["attention_mask"], dtype=torch.long),
                     "joint_label": ex["joint_label"],
                 })
+
+        if len(dataset_models) > 1:
+            raise ValueError(
+                "Prefix dataset mixes multiple model_name values. "
+                "Use one dataset per base model."
+            )
+
+        self.model_name = next(iter(dataset_models), None)
 
         logger.info(f"Loaded {len(self.examples)} examples from {jsonl_path}")
 
@@ -104,48 +108,12 @@ def collate_fn(batch):
     }
 
 
-def compute_kl_divergence(
-    model: ZipRCModel,
-    base_model: nn.Module,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Compute KL divergence KL(π_base || π_θ) over text tokens.
-
-    This regularization term preserves the base model's generation quality
-    by penalizing drift from the original token distribution.
-    """
-    with torch.no_grad():
-        base_outputs = base_model(input_ids=input_ids, attention_mask=attention_mask)
-        base_logits = base_outputs.logits[..., : model.original_vocab_size]
-        base_log_probs = F.log_softmax(base_logits, dim=-1)
-
-    # Get current model's text logits
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    current_logits = outputs.token_logits
-    current_log_probs = F.log_softmax(current_logits, dim=-1)
-
-    # KL(base || current) = sum(p_base * (log p_base - log p_current))
-    # Use last position only (matching paper's approach)
-    kl_div = F.kl_div(
-        current_log_probs[:, -1, :],
-        base_log_probs[:, -1, :],
-        reduction="batchmean",
-        log_target=True,
-    )
-
-    return kl_div
-
-
 def train_epoch(
     model: ZipRCModel,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     epoch: int,
-    alpha_kl: float = 0.0,
-    base_model: Optional[nn.Module] = None,
 ) -> dict:
     """Train for one epoch."""
     model.train()
@@ -172,13 +140,7 @@ def train_epoch(
         zip_logits = outputs.zip_logits[:, -1, :]  # (B, BV*BT)
         aux_loss = criterion(zip_logits, labels)
 
-        # Optional KL regularization
-        kl_loss = torch.tensor(0.0, device=device)
-        if alpha_kl > 0 and base_model is not None:
-            kl_loss = compute_kl_divergence(model, base_model, input_ids, attention_mask)
-
-        # Total loss
-        loss = aux_loss + alpha_kl * kl_loss
+        loss = aux_loss
 
         # Backward pass
         loss.backward()
@@ -187,7 +149,7 @@ def train_epoch(
         # Metrics
         total_loss += loss.item()
         total_aux_loss += aux_loss.item()
-        total_kl_loss += kl_loss.item() if alpha_kl > 0 else 0.0
+        total_kl_loss += 0.0
 
         preds = zip_logits.argmax(dim=-1)
         correct += (preds == labels).sum().item()
@@ -198,14 +160,14 @@ def train_epoch(
         pbar.set_postfix({
             "loss": f"{loss.item():.4f}",
             "aux": f"{aux_loss.item():.4f}",
-            "kl": f"{kl_loss.item():.4f}" if alpha_kl > 0 else "N/A",
+            "kl": "N/A",
             "acc": f"{acc:.2%}",
         })
 
     return {
         "loss": total_loss / len(dataloader),
         "aux_loss": total_aux_loss / len(dataloader),
-        "kl_loss": total_kl_loss / len(dataloader) if alpha_kl > 0 else 0.0,
+        "kl_loss": 0.0,
         "accuracy": correct / total if total > 0 else 0.0,
     }
 
@@ -278,7 +240,7 @@ def main():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="meta-llama/Meta-Llama-3.1-8B-Instruct",
+        default=DEFAULT_MODEL_NAME,
         help="Base model name or path",
     )
     parser.add_argument(
@@ -317,7 +279,7 @@ def main():
         "--alpha_kl",
         type=float,
         default=0.0,
-        help="Weight for KL regularization term (0 = disabled)",
+        help="Deprecated. Must remain 0.0 because training now enforces a single-model setup.",
     )
 
     # Checkpoint arguments
@@ -345,6 +307,12 @@ def main():
 
     args = parser.parse_args()
 
+    if args.alpha_kl != 0.0:
+        raise ValueError(
+            "train_zip_rc.py no longer supports KL regularization because it "
+            "requires loading a second model. Re-run with --alpha_kl 0.0."
+        )
+
     # Determine device
     if args.device == "auto":
         if torch.cuda.is_available():
@@ -364,13 +332,22 @@ def main():
             f"Dataset not found: {args.data_path}\n"
             "Run the data pipeline first:\n"
             "  python generate_rollouts.py\n"
-            "  python score_rollouts.py\n"
             "  python build_prefix_dataset.py"
         )
 
     # Load dataset
     logger.info(f"Loading dataset from {args.data_path}")
     dataset = PrefixDataset(args.data_path)
+    if dataset.model_name is not None and dataset.model_name != args.model_name:
+        raise ValueError(
+            f"Dataset/tokenizer mismatch: dataset was built for {dataset.model_name!r}, "
+            f"but training is using --model_name={args.model_name!r}."
+        )
+    if dataset.model_name is None:
+        logger.warning(
+            "Dataset does not record model_name metadata, so tokenizer compatibility "
+            "cannot be verified automatically."
+        )
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -398,17 +375,6 @@ def main():
         f"Trainable params: {trainable_params:,} / {total_params:,} "
         f"({100 * trainable_params / total_params:.2f}%)"
     )
-
-    # Load base model for KL regularization if needed
-    base_model = None
-    if args.alpha_kl > 0:
-        logger.info(f"Loading base model for KL regularization (alpha_kl={args.alpha_kl})")
-        from transformers import AutoModelForCausalLM
-        base_model = AutoModelForCausalLM.from_pretrained(args.model_name)
-        base_model = base_model.to(device)
-        base_model.eval()
-        for param in base_model.parameters():
-            param.requires_grad = False
 
     # Initialize optimizer
     optimizer = torch.optim.Adam(
@@ -457,13 +423,7 @@ def main():
             zip_logits = outputs.zip_logits[:, -1, :]
             aux_loss = criterion(zip_logits, labels)
 
-            # Optional KL regularization
-            kl_loss = torch.tensor(0.0, device=device)
-            if args.alpha_kl > 0 and base_model is not None:
-                kl_loss = compute_kl_divergence(model, base_model, input_ids, attention_mask)
-
-            # Total loss
-            loss = aux_loss + args.alpha_kl * kl_loss
+            loss = aux_loss
 
             # Backward pass
             loss.backward()
@@ -472,7 +432,7 @@ def main():
             # Update metrics
             total_loss += loss.item()
             total_aux_loss += aux_loss.item()
-            total_kl_loss += kl_loss.item() if args.alpha_kl > 0 else 0.0
+            total_kl_loss += 0.0
 
             preds = zip_logits.argmax(dim=-1)
             correct += (preds == labels).sum().item()
@@ -492,7 +452,7 @@ def main():
                 metrics = {
                     "loss": total_loss / (batch_idx + 1),
                     "aux_loss": total_aux_loss / (batch_idx + 1),
-                    "kl_loss": total_kl_loss / (batch_idx + 1) if args.alpha_kl > 0 else 0.0,
+                    "kl_loss": 0.0,
                     "accuracy": correct / total if total > 0 else 0.0,
                 }
                 save_checkpoint(model, optimizer, epoch, global_step, metrics, checkpoint_dir)
@@ -501,15 +461,13 @@ def main():
         epoch_metrics = {
             "loss": total_loss / len(dataloader),
             "aux_loss": total_aux_loss / len(dataloader),
-            "kl_loss": total_kl_loss / len(dataloader) if args.alpha_kl > 0 else 0.0,
+            "kl_loss": 0.0,
             "accuracy": correct / total if total > 0 else 0.0,
         }
 
         logger.info(f"Epoch {epoch} complete:")
         logger.info(f"  Loss: {epoch_metrics['loss']:.4f}")
         logger.info(f"  Aux Loss: {epoch_metrics['aux_loss']:.4f}")
-        if args.alpha_kl > 0:
-            logger.info(f"  KL Loss: {epoch_metrics['kl_loss']:.4f}")
         logger.info(f"  Accuracy: {epoch_metrics['accuracy']:.2%}")
 
         # Save end-of-epoch checkpoint
