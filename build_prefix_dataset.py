@@ -1,5 +1,5 @@
 """
-Build prefix-labeled training dataset for ZIP-RC from scored rollouts.
+Build prefix-labeled training dataset for ZIP-RC from rollout files.
 
 For each rollout with T completion tokens, walks prefixes t=1..T and computes:
   - tokens_left = T - t

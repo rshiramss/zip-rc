@@ -33,14 +33,14 @@ pip install -r requirements.txt
 ### Run Locally
 
 ```bash
-# Step 1: Generate rollouts from sample prompts
+# Step 1: Generate rollouts from GSM8K using the shared default model
 python generate_rollouts.py
 
-# Step 2: Score the rollouts
-python score_rollouts.py
-
-# Step 3: Build the prefix dataset for training
+# Step 2: Build the prefix dataset for training
 python build_prefix_dataset.py
+
+# Step 3: Train ZIP-RC in single-model mode
+python train_zip_rc.py --alpha_kl 0.0
 ```
 
 ### Run on Google Colab
@@ -50,6 +50,6 @@ Open the notebook in Google Colab: [![Open In Colab](https://colab.research.goog
 Or manually:
 1. Upload the repository files to Colab
 2. Run `!pip install -r requirements.txt`
-3. Follow the pipeline steps above
+3. Run the repo scripts from the notebook cells
 
-**Note:** Running on Colab requires a GPU runtime for reasonable performance with LLaMA models.
+**Note:** Running on Colab requires a GPU runtime for reasonable performance with `Qwen/Qwen3-8B`.

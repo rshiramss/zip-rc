@@ -26,6 +26,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from zip_rc_model import DEFAULT_MODEL_NAME
+
 
 NUM_REWARD_BINS = 2
 NUM_LENGTH_BINS = 5
@@ -51,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
+        default=DEFAULT_MODEL_NAME,
         help="Model name or path for generation/tokenization when --completion is not supplied.",
     )
     parser.add_argument(
